@@ -8,9 +8,10 @@ let gameInstance = null;
 let aiWorker = null;
 /** @type {ReturnType<typeof setInterval> | null} */
 let captureInterval = null;
-/** Pulos de emergência enquanto o TF/YOLO carrega (sem isso só há gravidade). */
+/** Loop direto de alta frequência — substitui o intervalo de sobrevivência e age como fallback
+ *  do YOLO quando o modelo não detecta o pássaro pixel-art. */
 /** @type {ReturnType<typeof setInterval> | null} */
-let survivalUntilModelInterval = null;
+let directAiInterval = null;
 let inFlight = false;
 let aiEnabled = true;
 let debugMode = true;
@@ -27,41 +28,62 @@ function bumpHud() {
   hudBus.dispatchEvent(new CustomEvent(HUD_EVENT));
 }
 
-function clearSurvivalUntilModel() {
-  if (survivalUntilModelInterval != null) {
-    clearInterval(survivalUntilModelInterval);
-    survivalUntilModelInterval = null;
-  }
-}
-
-/** Mantém o pássaro no ar enquanto o grafo YOLO ainda não está pronto. */
-function startSurvivalWhileModelLoads() {
-  clearSurvivalUntilModel();
-  if (modelLoaded || !aiEnabled) return;
-  survivalUntilModelInterval = setInterval(() => {
-    if (!gameInstance || !aiEnabled) return;
-    if (modelLoaded) {
-      clearSurvivalUntilModel();
-      return;
-    }
-    if (!gameInstance.running) return;
-    const b = gameInstance.bird;
-    if (b.y > gameInstance.height * 0.48) {
-      gameInstance.jump();
-    }
-  }, 420);
-}
-
 /**
- * Quando o YOLO não acha o pássaro desenhado (arte ≠ foto COCO), usa a mesma
- * regra do worker com a posição real do pássaro no jogo.
+ * Controlador baseado no apex real do pulo + lookahead de 0.3 s.
+ *
+ * Lógica central:
+ *  1. Calcula onde seria o apex (ponto mais alto) se o pássaro pular agora.
+ *     Se o apex ultrapassar o teto do cano → NÃO pula (evita cano de cima).
+ *  2. Simula posição em 0.3 s com a física atual.
+ *     Se vai cair abaixo do centro do gap → PULA.
+ *
  * @param {import('./game/game.js').Game} game
+ * @returns {boolean}
  */
 function heuristicJump(game) {
   const next = game.pipes.getNextPipe(game.bird.x);
-  if (!next) return false;
+  const bird = game.bird;
+  const g = bird.gravity;
+
+  if (!next) {
+    // Sem cano: mantém pássaro perto do centro, mas não se já subindo
+    return bird.y > game.height * 0.55 && bird.vy > -100;
+  }
+
   const gapMidY = (next.gapTop + next.gapBottom) / 2;
-  return game.bird.y > gapMidY;
+
+  // O quanto o pássaro sobe após um pulo (partindo sempre de vy = jumpVelocity = -420):
+  // apex_rise = jumpVelocity² / (2 * gravity) = 420² / 2900 ≈ 60.8 px
+  const apexRise = (bird.jumpVelocity * bird.jumpVelocity) / (2 * g);
+  const jumpApexY = bird.y - apexRise;
+
+  // Se o apex ficaria acima da borda interna do cano de cima → não pula
+  if (jumpApexY < next.gapTop + bird.height / 2) return false;
+
+  // Predição de 0.3 s com física atual (sem pulo)
+  const yFuture = bird.y + bird.vy * 0.3 + 0.5 * g * 0.09;
+
+  // Pula se a trajetória atual vai ultrapassar o centro do gap
+  return yFuture > gapMidY;
+}
+
+function startDirectAi() {
+  if (directAiInterval) return;
+  directAiInterval = setInterval(() => {
+    if (!gameInstance || !aiEnabled || !gameInstance.running) return;
+    if (heuristicJump(gameInstance)) {
+      gameInstance.jump();
+      lastDecision = { jump: true, at: Date.now() };
+      bumpHud();
+    }
+  }, 33);
+}
+
+function stopDirectAi() {
+  if (directAiInterval != null) {
+    clearInterval(directAiInterval);
+    directAiInterval = null;
+  }
 }
 
 export const hudBus = new EventTarget();
@@ -116,6 +138,8 @@ export function bootstrap(canvas) {
   gameInstance.pipes.seedStart();
   gameInstance.start();
 
+  startDirectAi();
+
   aiWorker = new Worker(new URL('./ai/aiWorker.js', import.meta.url), {
     type: 'module',
   });
@@ -123,7 +147,6 @@ export function bootstrap(canvas) {
   aiWorker.onmessage = ({ data }) => {
     if (data?.type === 'model-loaded') {
       modelLoaded = true;
-      clearSurvivalUntilModel();
       bumpHud();
       return;
     }
@@ -183,12 +206,19 @@ export function bootstrap(canvas) {
       try {
         const bitmap = await createImageBitmap(canvas);
         const nextPipe = gameInstance.pipes.getNextPipe(gameInstance.bird.x);
+        const bird = gameInstance.bird;
         aiWorker.postMessage(
           {
             type: 'predict',
             image: bitmap,
             canvas: { w: canvas.width, h: canvas.height },
             nextPipe,
+            birdPhysics: {
+              vy: bird.vy,
+              gravity: bird.gravity,
+              height: bird.height,
+              pipeSpeed: gameInstance.pipeSpeed,
+            },
           },
           [bitmap],
         );
@@ -199,15 +229,12 @@ export function bootstrap(canvas) {
     })();
   }, 100);
 
-  startSurvivalWhileModelLoads();
-
   const onKeyDown = (e) => {
     if (e.code !== 'Space' && e.key !== ' ') return;
     e.preventDefault();
     if (!gameInstance) return;
     if (!gameInstance.running) {
       gameInstance.reset();
-      startSurvivalWhileModelLoads();
       bumpHud();
       return;
     }
@@ -220,7 +247,6 @@ export function bootstrap(canvas) {
     if (!gameInstance) return;
     if (!gameInstance.running) {
       gameInstance.reset();
-      startSurvivalWhileModelLoads();
       bumpHud();
       return;
     }
@@ -242,7 +268,7 @@ export function bootstrap(canvas) {
       clearInterval(captureInterval);
       captureInterval = null;
     }
-    clearSurvivalUntilModel();
+    stopDirectAi();
     aiWorker?.terminate();
     aiWorker = null;
     gameInstance?.stop();
@@ -256,9 +282,9 @@ export function bootstrap(canvas) {
 export function setAiEnabled(enabled) {
   aiEnabled = enabled;
   if (!enabled) {
-    clearSurvivalUntilModel();
-  } else if (gameInstance?.running && !modelLoaded) {
-    startSurvivalWhileModelLoads();
+    stopDirectAi();
+  } else {
+    startDirectAi();
   }
   bumpHud();
 }

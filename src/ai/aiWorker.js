@@ -120,8 +120,9 @@ self.onmessage = async ({ data }) => {
       height,
     );
 
-    // Pega informações do próximo cano enviadas pelo jogo (posição/altura do gap), se existir.
+    // Pega informações do próximo cano e física do pássaro enviadas pelo jogo.
     const nextPipe = data.nextPipe ?? null;
+    const birdPhysics = data.birdPhysics ?? null;
 
     // Variável que indica se a IA decidiu pular nesse frame.
     let jump = false;
@@ -130,8 +131,10 @@ self.onmessage = async ({ data }) => {
 
     // Só decide se houve detecção válida do pássaro.
     if (bird) {
-      // Calcula a decisão de pulo a partir da posição vertical do pássaro e do próximo cano.
-      const d = decideJump(bird.centerY, nextPipe);
+      // Calcula a decisão de pulo usando física: prediz trajetória até o cano.
+      const d = decideJump(bird.centerY, nextPipe, birdPhysics
+        ? { ...birdPhysics, birdX: bird.centerX }
+        : null);
       // Atualiza as variáveis com o resultado da decisão.
       jump = d.jump;
       gapMidY = d.gapMidY;
