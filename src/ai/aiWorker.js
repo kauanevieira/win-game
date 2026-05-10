@@ -126,8 +126,8 @@ self.onmessage = async ({ data }) => {
 
     // Variável que indica se a IA decidiu pular nesse frame.
     let jump = false;
-    // Coordenada Y do meio do gap entre canos — útil para debug/visualização.
-    let gapMidY = null;
+    // Coordenada Y do meio do gap — sempre calculada para visualização no debug.
+    let gapMidY = nextPipe ? (nextPipe.gapTop + nextPipe.gapBottom) / 2 : null;
 
     // Só decide se houve detecção válida do pássaro.
     if (bird) {

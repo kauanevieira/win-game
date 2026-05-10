@@ -76,6 +76,21 @@ function startDirectAi() {
       lastDecision = { jump: true, at: Date.now() };
       bumpHud();
     }
+    if (debugMode) {
+      const next = gameInstance.pipes.getNextPipe(gameInstance.bird.x);
+      const b = gameInstance.bird;
+      // Usa bbox do YOLO se disponível; senão usa posição real do pássaro no jogo
+      const bbox = gameInstance.aiDebug?.bbox ?? {
+        x1: b.x - b.width / 2,
+        y1: b.y - b.height / 2,
+        x2: b.x + b.width / 2,
+        y2: b.y + b.height / 2,
+      };
+      gameInstance.setAIDebug({
+        bbox,
+        gapMidY: next ? (next.gapTop + next.gapBottom) / 2 : null,
+      });
+    }
   }, 33);
 }
 
